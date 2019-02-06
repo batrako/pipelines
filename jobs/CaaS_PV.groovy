@@ -11,7 +11,7 @@ pipelineJob('CaaS/K8sPvCreate') {
                 git { 
                     remote { url('https://github.com/batrako/pipelines') } 
                     branches('master') 
-                    scriptPath('/scripts/pvs') 
+                    scriptPath('jobs/pvs') 
                     extensions { }  // required as otherwise it may try to tag the repo, which you may not want 
                 } 
             } 
