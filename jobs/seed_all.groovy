@@ -4,7 +4,6 @@ job('Seed All') {
   }
   steps {
     dsl {
-      folder('pruebas')
       external('jobs/*.groovy')  
       // default behavior
       // removeAction('IGNORE')      
