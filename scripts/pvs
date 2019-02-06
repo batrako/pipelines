@@ -1,1 +1,175 @@
+import groovy.transform.Field
 
+def retreiveFileList(path, filter) {
+    FILES_LIST=""
+    dir (path) {
+        try {
+          FILES_LIST = sh (script: "ls "+filter, returnStdout: true).trim()    
+        } catch (Exception e) { }
+        return FILES_LIST;
+    }
+}
+
+def createPV(data, desc) {
+    def pvStorage=""
+    def pvAccessMode=""
+    def nodeGroup=data.nodeGroup
+    try {
+        pvStorage=data.config.storage
+    } catch (Exception e) {
+        pvStorage=null
+    }
+    try {
+        pvAccessMode=data.config.accessModes[0]
+    } catch (Exception e)  {
+        pvAccessMode=null
+    }
+    if (nodeGroup==null) {
+        nodeGroup="unnamed"
+    }
+    if (pvStorage == null ) {
+        try {
+          pvStorage=data.volumeClaimTemplate.resources.requests.storage  
+        } catch (Exception e) {
+            pvStorage=null
+        }
+        
+    }
+    if ( pvAccessMode == null ) {
+        try {
+             pvAccessMode=data.volumeClaimTemplate.accessModes[0]
+        } catch (Exception e ) {
+            pvAccessMode=null
+        }
+       
+    }
+    if (pvStorage != null) {
+        pvStorage=pvStorage.replaceAll("[^\\d.]", "")
+    }
+    def name=idegarApp+'-' + nodeGroup+'-'+desc + '-'+ entorno
+    if ( pvStorage == null || pvAccessMode == null ) {
+        return false
+    }
+    //echo "parámetros: "+ 'group=stackelasticarq\naction=create\nenvironment='+entorno+'\nclusters='+clusters+'\ncapacity='+pvStorage.toString()+'\naccessMode='+pvAccessMode+'\nname='+name
+    def handle = triggerRemoteJob auth: CredentialsAuth(credentials: 'remote_jenkins'),  job: remoteJenkinsUrl+'/job/prueba', parameters: 'group=stackelasticarq\naction=create\nenvironment=$entorno\nclusters=$clusters\ncapacity='+pvStorage.toString()+'\naccessMode='+pvAccessMode+'\nname='+name, blockBuildUntilComplete: true
+    //echo 'Remote Status: ' + handle.getBuildStatus().toString()
+    return true
+}
+
+def  ( REDIS_FILES_LIST,LOGSTASH_FILES_LIST,ELASTICSEARCH_FILES_LISTS )=["","",""]
+// Cambiar en un futuro por el grupo definitivo
+def  gitGroup="stackelasticarq"
+@Field def  remoteJenkinsUrl="http://192.168.2.3:18080"
+
+pipeline {
+    
+    agent any
+    stages {
+        stage('checkout del proyecto') {
+            steps {
+                script {
+                   /* if (env.PROXY != ""){
+                        withCredentials([usernamePassword(credentialsId: "httpGitlabUser", passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
+                            dir ("K8S_CAAS"){
+                                sh "git clone https://${GIT_USERNAME}:${GIT_PASSWORD}@git.svb.lacaixa.es/cbk/k8s/stackelasticarq/${idegarApp}.git"
+                                sh "git -C ${idegarApp} checkout pruebas/ELKaaS-dinamico-k8s-ialvarez"
+                            }
+                        }
+                    } else {
+                        dir ("K8S_CAAS"){
+                            sh("git clone git@${GIT_HOST}:cbk/k8s/stackelasticarq/${idegarApp}.git")
+                        }
+                    }*/
+                    println "***** Preparando instalación cluster: ["+idegarApp+"], entorno: ["+entorno+"] *****"
+                }
+            }
+        }
+        stage('retreive PVs') {
+            steps {
+                script {
+                        REDIS_FILES_LIST=retreiveFileList('K8S_CAAS/'+idegarApp+'/k8s/'+entorno.toLowerCase()+'/redis/', 'values*.yml')
+                        LOGSTASH_FILES_LIST=retreiveFileList('K8S_CAAS/'+idegarApp+'/k8s/'+entorno.toLowerCase()+'/logstash/', 'values*.yml')
+                        ELASTICSEARCH_FILES_LIST=retreiveFileList('K8S_CAAS/'+idegarApp+'/k8s/'+entorno.toLowerCase()+'/elasticsearch/', 'values*.yml')
+                        //echo "REDIS_FILES_LIST : ${REDIS_FILES_LIST}"
+                        //echo "LOGSTASH_FILES_LIST : ${LOGSTASH_FILES_LIST}"
+                        //echo "ELASTICSEARCH_FILES_LIST : ${ELASTICSEARCH_FILES_LIST}"
+                        //datas = readYaml (file: 'release.yml')    
+                    //println datas.metadata.name.toString();    
+                }
+                
+                
+            }
+        }
+        stage('create Redis PV') {
+            steps {
+                script {
+                    // Redis PV Creation if exists
+                    for(String ele : REDIS_FILES_LIST.split("\\r?\\n")){ 
+                            def data = readYaml(file: 'K8S_CAAS/'+idegarApp+'/k8s/'+entorno.toLowerCase()+'/redis/'+ele)
+                            createPV(data,'data')
+                    }
+                }
+            }
+        }
+        stage('Create Logstash PV') {
+            steps{
+                script {
+                    // Logstash PV Creation if exists
+                    for(String ele : LOGSTASH_FILES_LIST.split("\\r?\\n")){ 
+                            def data = readYaml(file: 'K8S_CAAS/'+idegarApp+'/k8s/'+entorno.toLowerCase()+'/logstash/'+ele)
+                            createPV(data,'config')
+                    }
+                }
+            }
+        }
+        
+        stage('Create elasticsearch PVs') {
+            steps{
+                script {
+                    // Elasticsearch PV Creation if exists
+                    for(String ele : ELASTICSEARCH_FILES_LIST.split("\\r?\\n")){ 
+                            def data = readYaml(file: 'K8S_CAAS/'+idegarApp+'/k8s/'+entorno.toLowerCase()+'/elasticsearch/'+ele)
+                            createPV(data,'data')
+                    }
+                }
+            }
+        }
+        stage('create admin secret'){
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: "cluster_credentials", passwordVariable: 'CLUSTER_PASSWORD', usernameVariable: 'CLUSTER_USERNAME')]) {
+                        def handle = triggerRemoteJob auth: CredentialsAuth(credentials: 'remote_jenkins'),  job: remoteJenkinsUrl+'/job/secret', parameters: 'group='+gitGroup+'\naction=create\nenvironment=$entorno\nclusters=$clusters\nsecretName='+idegarApp+'-elastic-credentials'+'\nsecretKey=username\nsecretValue='+CLUSTER_USERNAME, blockBuildUntilComplete: true
+                        def handle2 = triggerRemoteJob auth: CredentialsAuth(credentials: 'remote_jenkins'),  job: remoteJenkinsUrl+'/job/secret', parameters: 'group='+gitGroup+'\naction=create\nenvironment=$entorno\nclusters=$clusters\nsecretName='+idegarApp+'-elastic-credentials'+'\nsecretKey=password\nsecretValue='+CLUSTER_PASSWORD, blockBuildUntilComplete: true
+                    }
+                }
+            }
+        }
+        stage('create node cert secret'){
+            steps {
+                script {
+                    withCredentials([file(credentialsId: 'node_cert', variable: 'NODE_CERT')]) {
+                        def filecert= readFile "${NODE_CERT}"
+                        def encoded=filecert.bytes.encodeBase64().toString()
+                        def handle = triggerRemoteJob auth: CredentialsAuth(credentials: 'remote_jenkins'),  job: remoteJenkinsUrl+'/job/secret', parameters: 'group='+gitGroup+'\naction=create\nenvironment=$entorno\nclusters=$clusters\nsecretName='+idegarApp+'-elastic-certificate\nsecretValue='+encoded, blockBuildUntilComplete: true
+                    }
+                }
+            }
+        }
+        stage('deploy cluster'){
+            steps {
+                script {
+                    //Invocación al job de deploy
+                    def handle = triggerRemoteJob auth: CredentialsAuth(credentials: 'remote_jenkins'),  job: remoteJenkinsUrl+'/job/deploy', parameters: 'group='+gitGroup+'\naction=create\nenvironment=$entorno\nclusters=$clusters\nsecretName='+idegarApp+'-elastic-certificate\nsecretValue='+encoded,parameterFile: 'node-cert.p12='+NODE_CERT, blockBuildUntilComplete: true
+                }
+            }
+        }
+        /* stage('Clean environment') {
+            steps {
+                script {
+                    sh "rm -rf K8S_CAAS/${idegarApp}"
+                }    
+            }
+            
+        }*/
+    }
+}
